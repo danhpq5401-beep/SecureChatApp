@@ -1,0 +1,408 @@
+﻿@{
+    ViewData["Title"] = "SignalR Pro Chat";
+}
+
+<div class="chat-container">
+    <h2>🔥 SignalR Super Chat</h2>
+
+    <div class="chat-top">
+        <input type="text" id="userInput" placeholder="Tên của bạn..." />
+        <button id="connectBtn">Kết nối</button>
+    </div>
+
+    <div class="chat-body">
+        <div class="users-box">
+            <h4>🟢 Người dùng online</h4>
+            <ul id="userList"></ul>
+        </div>
+
+        <div class="chat-box">
+            <div id="messagesList" class="messages"></div>
+
+            <!--
+                Phần HTML này đã được dọn dẹp sạch sẽ,
+                xóa hết các dòng <!-- ... -->
+            
+            <div class="chat-input-area">
+
+                <div class="chat-input">
+                    <input type="text" id="messageInput" placeholder="Nhập tin nhắn..." />
+                    <button id="sendButton">Gửi</button>
+                </div>
+
+                <div class="file-upload-area">
+                    <input type="file" id="fileUpload" accept="image/*, application/pdf, .zip, .rar" />
+                    <button id="uploadButton">Gửi File</button>
+                </div>
+
+                <div id="sticker-panel">
+                    <img src="/stickers/like.png" class="sticker" data-url="/stickers/like.png" alt="Like" title="Like" />
+                    <img src="/stickers/love.png" class="sticker" data-url="/stickers/love.png" alt="Love" title="Love" />
+                    <img src="/stickers/haha.png" class="sticker" data-url="/stickers/haha.png" alt="Haha" title="Haha" />
+                    <img src="/stickers/wow.png" class="sticker" data-url="/stickers/wow.png" alt="Wow" title="Wow" />
+                </div>
+
+            </div>
+
+        </div>
+    </div>
+</div>
+
+<audio id="notifySound" src="https://cdn.pixabay.com/download/audio/2021/09/20/audio_c4c8d8c3cb.mp3" preload="auto"></audio>
+
+@section Scripts {
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/microsoft-signalr/7.0.5/signalr.min.js"></script>
+    <script>
+        // Bọc toàn bộ code trong 'DOMContentLoaded'
+        document.addEventListener("DOMContentLoaded", function() {
+
+            let connection;
+            let username;
+
+            document.getElementById("connectBtn").addEventListener("click", async () => {
+                username = document.getElementById("userInput").value.trim();
+                if (!username) return alert("Nhập tên trước khi tham gia!");
+
+                const hubUrl = `${window.location.origin}/chatHub?username=${encodeURIComponent(username)}`;
+
+                connection = new signalR.HubConnectionBuilder()
+                    .withUrl(hubUrl)
+                    .build();
+
+                // HÀM NHẬN TIN NHẮN (Đã nâng cấp)
+                connection.on("ReceiveMessage", (user, message, time) => {
+                    const msgList = document.getElementById("messagesList");
+                    const msg = document.createElement("div");
+                    msg.classList.add("msg");
+
+                    const header = document.createElement("b");
+                    header.textContent = `${user} [${time}]: `;
+                    msg.appendChild(header);
+
+                    if (message.match(/\.(jpeg|jpg|gif|png)$/i)) {
+                        msg.appendChild(document.createElement("br"));
+                        const img = document.createElement("img");
+                        img.src = message;
+                        img.classList.add("chat-image");
+                        msg.appendChild(img);
+
+                    } else if (message.startsWith("/uploads/") || message.startsWith("http")) {
+                        msg.appendChild(document.createElement("br"));
+                        const link = document.createElement("a");
+                        link.href = message;
+                        link.target = "_blank";
+                        link.textContent = "📁 " + (message.includes('/') ? message.split('/').pop() : message);
+                        msg.appendChild(link);
+
+                    } else {
+                        msg.appendChild(document.createTextNode(message));
+                    }
+
+                    if (user === username) msg.classList.add("me");
+
+                    msgList.appendChild(msg);
+                    msgList.scrollTop = msgList.scrollHeight;
+                    playSound();
+                });
+
+                connection.on("UserJoined", (user) => {
+                    showStatus(`${user} đã tham gia`);
+                });
+
+                connection.on("UserLeft", (user) => {
+                    showStatus(`${user} đã rời đi`);
+                });
+
+                connection.on("UpdateUserList", (users) => {
+                    const list = document.getElementById("userList");
+                    list.innerHTML = "";
+                    users.forEach(u => {
+                        const li = document.createElement("li");
+                        li.textContent = u;
+                        list.appendChild(li);
+                    });
+                });
+
+                try {
+                    await connection.start();
+                    document.querySelector(".chat-top").style.display = "none";
+                    document.querySelector(".chat-body").style.display = "flex";
+                } catch (err) {
+                    console.error("Lỗi khi kết nối SignalR:", err);
+                    alert("Không thể kết nối tới server chat.");
+                }
+            });
+
+            // Nút Gửi tin nhắn (Text)
+            document.getElementById("sendButton").addEventListener("click", async () => {
+                const message = document.getElementById("messageInput").value.trim();
+                if (message && connection)
+                    await connection.invoke("SendMessage", username, message);
+                document.getElementById("messageInput").value = "";
+            });
+
+            // Nút Gửi File (Upload)
+            document.getElementById("uploadButton").addEventListener("click", async () => {
+                const fileInput = document.getElementById("fileUpload");
+                const file = fileInput.files[0];
+
+                if (!file) {
+                    alert("Vui lòng chọn file trước.");
+                    return;
+                }
+                if (!connection) {
+                    alert("Chưa kết nối!");
+                    return;
+                }
+
+                const formData = new FormData();
+                formData.append("file", file);
+
+                try {
+                    const response = await fetch(`${window.location.origin}/Home/UploadFile`, {
+                        method: 'POST',
+                        body: formData
+                    });
+
+                    const result = await response.json();
+
+                    if (result.success) {
+                        await connection.invoke("SendMessage", username, result.url);
+                        fileInput.value = "";
+                    } else {
+                        alert("Upload thất bại: " + result.message);
+                    }
+                } catch (error) {
+                    console.error("Lỗi khi upload file:", error);
+                    alert("Đã xảy ra lỗi khi upload.");
+                }
+            });
+
+            // Gửi Sticker (Click)
+            document.querySelectorAll(".sticker").forEach(item => {
+                item.addEventListener("click", async () => {
+                    if (!connection) {
+                        alert("Chưa kết nối!");
+                        return;
+                    }
+                    const stickerUrl = item.getAttribute("data-url");
+                    await connection.invoke("SendMessage", username, stickerUrl);
+                });
+            });
+
+            function showStatus(text) {
+                const msgList = document.getElementById("messagesList");
+                const msg = document.createElement("div");
+                msg.classList.add("status");
+                msg.textContent = text;
+                msgList.appendChild(msg);
+                msgList.scrollTop = msgList.scrollHeight;
+            }
+
+            function playSound() {
+                document.getElementById("notifySound").play().catch(e => console.log("Không thể play âm thanh"));
+            }
+
+        }); // Đóng 'DOMContentLoaded'
+    </script>
+
+    <style>
+        body {
+            background: #111;
+            color: #eee;
+            font-family: 'Segoe UI', sans-serif;
+        }
+
+        .chat-container {
+            width: 900px;
+            margin: 40px auto;
+            background: #1b1b1b;
+            padding: 20px;
+            border-radius: 12px;
+            box-shadow: 0 0 10px #333;
+        }
+
+        .chat-body {
+            display: none;
+            gap: 20px;
+        }
+
+        .users-box {
+            width: 200px;
+            background: #222;
+            padding: 10px;
+            border-radius: 8px;
+            height: fit-content;
+        }
+
+        #userList li {
+            padding: 2px 5px;
+            border-radius: 4px;
+        }
+
+            #userList li:nth-child(odd) {
+                background-color: #333;
+            }
+
+        .chat-box {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .messages {
+            height: 400px;
+            overflow-y: auto;
+            background: #000;
+            padding: 10px;
+            border-radius: 8px;
+            border: 1px solid #333;
+        }
+
+        /* ============================================= */
+        /* ✨ BẮT ĐẦU PHẦN NÂNG CẤP (CSS) ✨ */
+        /* ============================================= */
+
+        /* HỘP CHỨA TOÀN BỘ ĐIỀU KHIỂN */
+        .chat-input-area {
+            background: #222;
+            padding: 10px;
+            border-radius: 8px;
+            margin-top: 10px;
+            border: 1px solid #333;
+        }
+
+        /* Hàng nhập text */
+        .chat-input {
+            display: flex;
+        }
+
+            .chat-input input {
+                flex: 1;
+                padding: 8px;
+                border-radius: 6px;
+                border: 1px solid #444;
+                background-color: #222;
+                color: #eee;
+                margin-right: 5px;
+            }
+
+            .chat-input button {
+                padding: 8px 12px;
+                background: #28a745;
+                border: none;
+                border-radius: 6px;
+                color: #fff;
+                cursor: pointer;
+            }
+
+        /* Hàng upload file */
+        .file-upload-area {
+            display: flex;
+            margin-top: 10px; /* Tạo khoảng cách với hàng trên */
+        }
+
+            .file-upload-area input[type="file"] {
+                flex: 1;
+                margin-right: 10px;
+                background-color: #333;
+                border-radius: 6px;
+                padding: 5px;
+                font-size: 12px;
+            }
+
+            .file-upload-area button {
+                padding: 8px 12px;
+                background: #555;
+                border: none;
+                border-radius: 6px;
+                color: #fff;
+                cursor: pointer;
+            }
+
+                .file-upload-area button:hover {
+                    background: #666;
+                }
+
+        /* Hàng sticker */
+        #sticker-panel {
+            border-top: 1px solid #444; /* Vẫn giữ đường kẻ */
+            padding-top: 10px;
+            margin-top: 10px; /* Tạo khoảng cách */
+        }
+
+        .sticker {
+            width: 50px;
+            height: 50px;
+            cursor: pointer;
+            margin: 3px;
+            transition: transform 0.2s ease;
+            background-color: #333;
+            border-radius: 5px;
+        }
+
+            .sticker:hover {
+                transform: scale(1.15);
+            }
+
+        /* ============================================= */
+        /* ✨ KẾT THÚC PHẦN NÂNG CẤP (CSS) ✨ */
+        /* ============================================= */
+
+
+        .msg {
+            margin: 4px 0;
+            padding: 5px;
+            line-height: 1.4;
+        }
+
+            .msg.me {
+                text-align: right;
+                color: #70dbff;
+            }
+
+                .msg.me b {
+                    color: #70dbff;
+                }
+
+            .msg b {
+                color: #0f0;
+            }
+
+        .status {
+            text-align: center;
+            color: #888;
+            font-style: italic;
+            margin: 5px 0;
+        }
+
+        /* Class cho ảnh được gửi trong chat */
+        .chat-image {
+            max-width: 250px;
+            max-height: 200px;
+            border-radius: 8px;
+            display: block;
+            margin-top: 5px;
+            background-color: #333;
+        }
+
+        .msg.me .chat-image {
+            margin-left: auto;
+        }
+
+        /* Style cho link file */
+        .msg a {
+            color: #1e90ff;
+            text-decoration: none;
+            background-color: #2a2a2a;
+            padding: 5px 8px;
+            border-radius: 5px;
+            border: 1px solid #444;
+        }
+
+            .msg a:hover {
+                text-decoration: underline;
+                background-color: #333;
+            }
+    </style>
+}
